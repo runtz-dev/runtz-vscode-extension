@@ -1,0 +1,194 @@
+{
+  "name": "runtz-security",
+  "displayName": "Runtz Security",
+  "description": "Run Runtz SAST and SCA scans directly from the VS Code Explorer.",
+  "version": "1.0.0",
+  "publisher": "runtz",
+  "license": "BUSL-1.1",
+  "icon": "resources/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/runtz-dev/runtz-vscode-extension.git"
+  },
+  "bugs": {
+    "url": "https://github.com/runtz-dev/runtz-vscode-extension/issues"
+  },
+  "homepage": "https://runtz.dev",
+  "vsce": {
+    "baseContentUrl": "https://github.com/runtz-dev/runtz-vscode-extension/blob/HEAD",
+    "baseImagesUrl": "https://raw.githubusercontent.com/runtz-dev/runtz-vscode-extension/HEAD"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "security",
+    "sast",
+    "sca",
+    "vulnerability",
+    "devsecops"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onView:runtz.sidebar",
+    "onCommand:runtz.scanSast",
+    "onCommand:runtz.scanSca",
+    "onCommand:runtz.openOverview",
+    "onCommand:runtz.openLastScan",
+    "onCommand:runtz.configureAccess",
+    "onCommand:runtz.showOutput",
+    "onCommand:runtz.cancelScan"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "A trusted workspace is required to run local security scans.",
+      "restrictedConfigurations": [
+        "runtz.cliPath"
+      ]
+    },
+    "virtualWorkspaces": {
+      "supported": false
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "runtz.scanSast",
+        "title": "Runtz: SAST Scan"
+      },
+      {
+        "command": "runtz.scanSca",
+        "title": "Runtz: SCA Scan"
+      },
+      {
+        "command": "runtz.openOverview",
+        "title": "Runtz: Open Overview"
+      },
+      {
+        "command": "runtz.openLastScan",
+        "title": "Runtz: Open in Runtz"
+      },
+      {
+        "command": "runtz.configureAccess",
+        "title": "Runtz: Configure Access"
+      },
+      {
+        "command": "runtz.showOutput",
+        "title": "Runtz: View Output"
+      },
+      {
+        "command": "runtz.cancelScan",
+        "title": "Runtz: Cancel Scan"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "runtz.scanSast",
+          "when": "resourceScheme == file && explorerResourceIsFolder && isWorkspaceTrusted",
+          "group": "4_search@90"
+        },
+        {
+          "command": "runtz.scanSca",
+          "when": "resourceScheme == file && !explorerResourceIsFolder && isWorkspaceTrusted && resourceFilename =~ /^(package\\.json|requirements\\.txt|go\\.mod|pom\\.xml|Gemfile\\.lock|composer\\.json|Cargo\\.toml|.*\\.csproj)$/i",
+          "group": "4_search@90"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "runtz.scanSast",
+          "when": "false"
+        },
+        {
+          "command": "runtz.scanSca",
+          "when": "false"
+        },
+        {
+          "command": "runtz.openOverview",
+          "when": "false"
+        },
+        {
+          "command": "runtz.openLastScan",
+          "when": "false"
+        },
+        {
+          "command": "runtz.showOutput",
+          "when": "false"
+        },
+        {
+          "command": "runtz.cancelScan",
+          "when": "false"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "runtz",
+          "title": "Runtz",
+          "icon": "resources/activitybar.svg"
+        }
+      ]
+    },
+    "views": {
+      "runtz": [
+        {
+          "type": "webview",
+          "id": "runtz.sidebar",
+          "name": "Runtz"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Runtz",
+      "properties": {
+        "runtz.cliPath": {
+          "type": "string",
+          "default": "runtz",
+          "scope": "machine",
+          "description": "Executable path for the installed Runtz CLI. Keep \"runtz\" to use PATH."
+        },
+        "runtz.endpoint": {
+          "type": "string",
+          "default": "https://engine.runtz.dev",
+          "scope": "machine",
+          "description": "Runtz engine URL used by the CLI."
+        },
+        "runtz.platformUrl": {
+          "type": "string",
+          "default": "https://runtz.dev",
+          "scope": "machine",
+          "description": "Runtz web platform URL opened by sidebar actions."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run compile",
+    "package:vsix": "npm run check && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^22.0.0",
+    "@types/vscode": "~1.95.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^9.0.0",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^4.1.10"
+  }
+}

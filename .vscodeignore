@@ -1,0 +1,17 @@
+.vscode/**
+.github/**
+.gitignore
+.env*
+src/**
+test/**
+coverage/**
+node_modules/**
+eslint.config.mjs
+esbuild.mjs
+package-lock.json
+tsconfig.json
+*.log
+*.vsix
+SHA256SUMS
+dist/*.map
+!dist/extension.js
