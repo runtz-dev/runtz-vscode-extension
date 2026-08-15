@@ -15,8 +15,11 @@ the resulting security report to your configured Runtz platform.
   `runtz` in `PATH`.
 - A workspace API key created in **Runtz → API Keys**.
 
-The extension stores the API key in VS Code `SecretStorage`. It never writes
-the token to settings, workspace files, command arguments, or logs.
+Authentication is owned by the CLI. An existing `runtz login` works
+automatically in the extension; logging in from the extension also logs the
+CLI in for terminal use. The extension sends a new token to `runtz login`
+through stdin and never places it in settings, workspace files, command
+arguments, or logs.
 
 ## Usage
 
@@ -55,18 +58,20 @@ previous scan for the same target and scan type.
 
 Open the Runtz view and select **Configure access** to:
 
-- add or replace the workspace token;
-- test the connection;
+- log in or replace the CLI workspace token;
+- test the CLI login;
 - switch between Runtz Cloud and a self-hosted installation;
 - configure the Runtz CLI executable path;
-- remove the stored token.
+- log the CLI out of the current environment.
 
 Cloud defaults:
 
 - Engine: `https://engine.runtz.dev`
 - Platform: `https://runtz.dev`
 
-Self-hosted users configure the engine and web platform URLs separately.
+Self-hosted users configure the engine and web platform URLs separately. The
+engine is stored with the CLI login; the platform URL remains an extension
+preference used for browser links.
 The engine must use HTTPS unless it is running on a loopback address such as
 `localhost`. Token verification requires a current engine with
 `GET /api/v1/keys/verify`.
@@ -120,9 +125,11 @@ Marketplace trusted publishing so it no longer depends on a long-lived secret.
 - Scans only run in trusted, local workspaces.
 - The CLI is started directly with `shell: false`.
 - Selected paths are passed as individual arguments.
-- The token is supplied only to the child process environment.
-- The token is bound to the engine where it was verified; changing the endpoint
-  requires explicit authorization.
+- Authentication is resolved by the CLI from `RUNTZ_TOKEN` or the login saved
+  by `runtz login`; the extension does not keep a second token copy.
+- Tokens entered in VS Code are sent only to `runtz login` through stdin.
+- Changing the engine endpoint requires a new CLI login so the token is
+  verified against that endpoint.
 - The extension never executes a workspace-provided `node_modules/.bin` tool.
 - The CLI executable is resolved to a canonical path outside the workspace.
 - Symbolic-link escapes and credential-bearing dependency URLs are rejected.

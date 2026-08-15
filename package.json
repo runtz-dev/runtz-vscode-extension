@@ -2,7 +2,7 @@
   "name": "runtz-security",
   "displayName": "Runtz Security",
   "description": "Run Runtz SAST and SCA scans directly from the VS Code Explorer.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "runtz",
   "license": "BUSL-1.1",
   "icon": "resources/icon.png",
@@ -159,7 +159,7 @@
           "type": "string",
           "default": "https://engine.runtz.dev",
           "scope": "machine",
-          "description": "Runtz engine URL used by the CLI."
+          "description": "Runtz engine URL used when the extension runs Runtz CLI login."
         },
         "runtz.platformUrl": {
           "type": "string",

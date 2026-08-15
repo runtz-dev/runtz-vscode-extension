@@ -1,7 +1,5 @@
 export const DEFAULT_ENDPOINT = "https://engine.runtz.dev"
 export const DEFAULT_PLATFORM_URL = "https://runtz.dev"
-export const TOKEN_SECRET_KEY = "runtz.apiToken"
-export const TOKEN_ENDPOINT_SECRET_KEY = "runtz.apiTokenEndpoint"
 export const SCAN_STATE_KEY = "runtz.scanState"
 export const LEGACY_LAST_SCAN_STATE_KEY = "runtz.lastScan"
 export const LEGACY_SCAN_TOTALS_STATE_KEY = "runtz.scanTotals"
