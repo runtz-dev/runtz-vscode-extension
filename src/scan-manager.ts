@@ -133,7 +133,7 @@ export class ScanManager implements vscode.Disposable {
       }
       throwIfCancelled(cancellation.token)
 
-      const access = await this.access.ensureAccess()
+      const access = await this.access.ensureAccess(executable)
       if (!access) {
         return
       }
@@ -169,8 +169,6 @@ export class ScanManager implements vscode.Disposable {
         targetPath,
         source,
         cwd,
-        endpoint: access.endpoint,
-        token: access.token,
         output: this.output,
         cancellation: cancellation.token,
       })

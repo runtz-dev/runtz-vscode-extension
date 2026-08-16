@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1
+
+- Unified VS Code and terminal authentication through `runtz login`; the
+  extension now reuses existing CLI logins and sends new tokens through stdin.
+
 ## 1.0.0
 
 - Added the Runtz Activity Bar view with overview and result actions.

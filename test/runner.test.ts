@@ -5,7 +5,13 @@ import * as path from "node:path"
 import type * as vscode from "vscode"
 import { afterEach, describe, expect, it } from "vitest"
 
-import { locateCli, runCliScan } from "../src/cli/runner"
+import {
+  locateCli,
+  readCliAuthStatus,
+  runCliLogin,
+  runCliLogout,
+  runCliScan,
+} from "../src/cli/runner"
 
 const temporaryDirectories: string[] = []
 
@@ -56,7 +62,35 @@ describe.skipIf(process.platform === "win32")("CLI runner", () => {
     )
   })
 
-  it("passes the token only through env and redacts split output chunks", async () => {
+  it("logs in through stdin and shares the CLI-managed login", async () => {
+    const directory = await makeTempDirectory()
+    const executable = await writeFakeCli(directory)
+    const token = "rtz_live_0123456789abcdef_0123456789abcdef"
+    process.env.RUNTZ_CONFIG_DIR = directory
+    try {
+      await expect(
+        runCliLogin(executable, "https://engine.runtz.dev", token)
+      ).resolves.toMatchObject({
+        authenticated: true,
+        verified: true,
+        endpoint: "https://engine.runtz.dev",
+        workspace: { id: "ws-test", name: "fake-workspace" },
+      })
+      await expect(readCliAuthStatus(executable)).resolves.toMatchObject({
+        authenticated: true,
+        tokenSource: "stored login (fake config)",
+      })
+      await runCliLogout(executable)
+      await expect(readCliAuthStatus(executable)).resolves.toMatchObject({
+        authenticated: false,
+        verified: false,
+      })
+    } finally {
+      delete process.env.RUNTZ_CONFIG_DIR
+    }
+  })
+
+  it("runs scans with the CLI-managed login and no token argument or env", async () => {
     const directory = await makeTempDirectory()
     const executable = await writeFakeCli(directory)
     const token = "rtz_live_0123456789abcdef_0123456789abcdef"
@@ -77,26 +111,27 @@ describe.skipIf(process.platform === "win32")("CLI runner", () => {
     } as unknown as vscode.CancellationToken
 
     process.env.AWS_SECRET_ACCESS_KEY = "must-not-reach-cli"
+    process.env.RUNTZ_CONFIG_DIR = directory
     let result
     try {
+      await runCliLogin(executable, "https://engine.runtz.dev", token)
       result = await runCliScan({
         executable,
         type: "sast",
         targetPath: "/tmp/project with spaces",
         source: "project",
         cwd: directory,
-        endpoint: "https://engine.runtz.dev",
-        token,
         output,
         cancellation,
       })
     } finally {
       delete process.env.AWS_SECRET_ACCESS_KEY
+      delete process.env.RUNTZ_CONFIG_DIR
     }
 
     expect(result.projectName).toBe("fake-project")
-    expect(log).toContain("[REDACTED]")
     expect(log).not.toContain(token)
+    expect(log).toContain("login-source=stored")
     expect(log).toContain("ambient-secret=absent")
   })
 })
@@ -121,19 +156,58 @@ if [ "$1" = "version" ]; then
   exit 0
 fi
 
-token=\${RUNTZ_TOKEN:-}
-for argument in "$@"; do
-  if [ "$argument" = "$token" ]; then
-    printf '%s\n' 'token appeared in argv' >&2
+config_dir=\${RUNTZ_CONFIG_DIR:-}
+token_file="$config_dir/fake-token"
+
+if [ "$1" = "login" ]; then
+  for argument in "$@"; do
+    case "$argument" in
+      rtz_live_*)
+        printf '%s\n' 'token appeared in argv' >&2
+        exit 1
+        ;;
+    esac
+  done
+  IFS= read -r token
+  if [ -z "$token" ]; then
+    printf '%s\n' 'missing token on stdin' >&2
     exit 1
   fi
+  printf '%s' "$token" > "$token_file"
+  printf '%s\n' 'Logged in to workspace "fake-workspace".'
+  exit 0
+fi
+
+if [ "$1" = "logout" ]; then
+  : > "$token_file"
+  printf '%s\n' 'Logged out.'
+  exit 0
+fi
+
+if [ "$1" = "whoami" ]; then
+  if [ -s "$token_file" ]; then
+    printf '%s\n' '{"authenticated":true,"verified":true,"workspace":{"id":"ws-test","name":"fake-workspace"},"apiKey":{"name":"VS Code","prefix":"rtz_live_test"},"endpoint":"https://engine.runtz.dev","tokenSource":"stored login (fake config)"}'
+  else
+    printf '%s\n' '{"authenticated":false,"verified":false,"endpoint":"https://engine.runtz.dev"}'
+  fi
+  exit 0
+fi
+
+if [ ! -s "$token_file" ]; then
+  printf '%s\n' 'no stored CLI login' >&2
+  exit 1
+fi
+
+for argument in "$@"; do
+  case "$argument" in
+    rtz_live_*)
+      printf '%s\n' 'token appeared in argv' >&2
+      exit 1
+      ;;
+  esac
 done
 
-token_prefix=$(printf '%.15s' "$token")
-token_suffix=\${token#"$token_prefix"}
-printf '%s' "$token_prefix" >&2
-sleep 0.05
-printf '%s\n' "$token_suffix" >&2
+printf '%s\n' 'login-source=stored' >&2
 printf 'ambient-secret=%s\n' "\${AWS_SECRET_ACCESS_KEY:-absent}" >&2
 printf '%s\n' \
   'Project: fake-project' \

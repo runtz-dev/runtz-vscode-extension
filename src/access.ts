@@ -2,26 +2,19 @@ import * as path from "node:path"
 
 import * as vscode from "vscode"
 
-import { locateCli } from "./cli/runner"
+import {
+  locateCli,
+  readCliAuthStatus,
+  runCliLogin,
+  runCliLogout,
+  type CliAuthStatus,
+} from "./cli/runner"
 import {
   ACCESS_WORKSPACE_STATE_KEY,
   DEFAULT_ENDPOINT,
   DEFAULT_PLATFORM_URL,
-  TOKEN_ENDPOINT_SECRET_KEY,
-  TOKEN_SECRET_KEY,
 } from "./constants"
 import { buildApiKeysUrl, normalizeBaseUrl } from "./platform"
-
-type VerifyResponse = {
-  workspace: {
-    name: string
-  }
-}
-
-export type VerifiedAccess = {
-  token: string
-  endpoint: string
-}
 
 type AccessAction = vscode.QuickPickItem & {
   id: "token" | "test" | "urls" | "cli" | "api-keys" | "remove"
@@ -31,23 +24,10 @@ export class AccessManager implements vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<void>()
   readonly onDidChange = this.changeEmitter.event
 
-  private readonly secretChangeSubscription: vscode.Disposable
-
-  constructor(private readonly context: vscode.ExtensionContext) {
-    this.secretChangeSubscription = context.secrets.onDidChange((event) => {
-      if (event.key === TOKEN_SECRET_KEY) {
-        this.changeEmitter.fire()
-      }
-    })
-  }
+  constructor(private readonly context: vscode.ExtensionContext) {}
 
   dispose(): void {
-    this.secretChangeSubscription.dispose()
     this.changeEmitter.dispose()
-  }
-
-  async getToken(): Promise<string | undefined> {
-    return this.context.secrets.get(TOKEN_SECRET_KEY)
   }
 
   getEndpoint(): string {
@@ -64,52 +44,39 @@ export class AccessManager implements vscode.Disposable {
     return readStringSetting("cliPath", "runtz").trim()
   }
 
-  async ensureAccess(): Promise<VerifiedAccess | undefined> {
-    const existing = await this.getToken()
-    if (existing) {
-      const endpoint = this.getEndpoint()
-      const verifiedEndpoint = await this.context.secrets.get(
-        TOKEN_ENDPOINT_SECRET_KEY
-      )
-      if (verifiedEndpoint !== endpoint) {
-        const selected = await vscode.window.showWarningMessage(
-          `The engine endpoint changed to ${endpoint}. Allow Runtz to send your token to this address?`,
-          { modal: true },
-          "Allow and test"
-        )
-        if (selected !== "Allow and test") {
-          return undefined
-        }
-        try {
-          await verifyToken(endpoint, existing)
-          await this.context.secrets.store(TOKEN_ENDPOINT_SECRET_KEY, endpoint)
-        } catch (error) {
-          await vscode.window.showErrorMessage(friendlyError(error))
-          return undefined
-        }
+  async ensureAccess(
+    executable: string
+  ): Promise<CliAuthStatus | undefined> {
+    try {
+      const status = await readCliAuthStatus(executable)
+      if (status.authenticated) {
+        await this.updateIdentity(status)
+        return status
       }
-      return { token: existing, endpoint }
+      return this.promptAndLogin(
+        executable,
+        preferredLoginEndpoint(status, this.getEndpoint())
+      )
+    } catch (error) {
+      await vscode.window.showErrorMessage(
+        `Could not verify the Runtz CLI login. ${friendlyError(error)}`
+      )
+      return undefined
     }
-    return this.promptAndStoreToken()
   }
 
   async configure(): Promise<void> {
-    const hasToken = Boolean(await this.getToken())
     const actions: AccessAction[] = [
       {
         id: "token",
-        label: hasToken ? "$(key) Change token" : "$(key) Add token",
-        description: "Stored securely by VS Code",
+        label: "$(key) Log in or change token",
+        description: "Shared with the Runtz CLI and terminal",
       },
-      ...(hasToken
-        ? [
-            {
-              id: "test" as const,
-              label: "$(pass) Test connection",
-              description: "Validate the token and workspace",
-            },
-          ]
-        : []),
+      {
+        id: "test",
+        label: "$(pass) Test CLI login",
+        description: "Validate the configured token and workspace",
+      },
       {
         id: "urls",
         label: "$(globe) Configure environment",
@@ -129,15 +96,11 @@ export class AccessManager implements vscode.Disposable {
         label: "$(link-external) Open API Keys",
         description: "Create or manage tokens in Runtz",
       },
-      ...(hasToken
-        ? [
-            {
-              id: "remove" as const,
-              label: "$(sign-out) Remove access",
-              description: "Delete the token from this VS Code installation",
-            },
-          ]
-        : []),
+      {
+        id: "remove",
+        label: "$(sign-out) Log out",
+        description: "Remove the CLI login from this environment",
+      },
     ]
 
     const selected = await vscode.window.showQuickPick(actions, {
@@ -151,7 +114,7 @@ export class AccessManager implements vscode.Disposable {
 
     switch (selected.id) {
       case "token":
-        await this.promptAndStoreToken()
+        await this.promptAndLogin()
         break
       case "test":
         await this.testConnection()
@@ -172,15 +135,36 @@ export class AccessManager implements vscode.Disposable {
         }
         break
       case "remove":
-        await this.removeToken()
+        await this.logout()
         break
     }
   }
 
-  private async promptAndStoreToken(): Promise<VerifiedAccess | undefined> {
+  private async promptAndLogin(
+    knownExecutable?: string,
+    requestedEndpoint?: string
+  ): Promise<CliAuthStatus | undefined> {
+    const executable = knownExecutable ?? (await this.resolveTrustedCli())
+    if (!executable) {
+      return undefined
+    }
+
+    let endpoint = requestedEndpoint
+    if (!endpoint) {
+      try {
+        const status = await readCliAuthStatus(executable)
+        endpoint = preferredLoginEndpoint(status, this.getEndpoint())
+      } catch {
+        // A rejected or unreachable existing login must not prevent the user
+        // from replacing it with the endpoint configured in VS Code.
+        endpoint = this.getEndpoint()
+      }
+    }
+
     const token = await vscode.window.showInputBox({
-      title: "Runtz token",
-      prompt: "Paste a token created in API Keys. VS Code will store it securely.",
+      title: "Runtz login",
+      prompt:
+        "Paste a token created in API Keys. The Runtz CLI will store it for VS Code and terminal use.",
       placeHolder: "rtz_live_…",
       password: true,
       ignoreFocusOut: true,
@@ -193,27 +177,21 @@ export class AccessManager implements vscode.Disposable {
       return undefined
     }
 
-    const normalizedToken = token.trim()
-    const endpoint = this.getEndpoint()
     try {
-      const verification = await vscode.window.withProgress(
+      const status = await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Window,
-          title: "Runtz: validating access…",
+          title: "Runtz: logging in through the CLI…",
         },
-        () => verifyToken(endpoint, normalizedToken)
+        () => runCliLogin(executable, endpoint, token.trim())
       )
-      await this.context.secrets.store(TOKEN_SECRET_KEY, normalizedToken)
-      await this.context.secrets.store(TOKEN_ENDPOINT_SECRET_KEY, endpoint)
-      await this.context.globalState.update(
-        ACCESS_WORKSPACE_STATE_KEY,
-        verification.workspace.name
-      )
+      await this.updateIdentity(status)
+      const destination = status.workspace?.name ?? status.endpoint
       void vscode.window.setStatusBarMessage(
-        `$(pass) Runtz connected to ${verification.workspace.name}`,
+        `$(pass) Runtz connected to ${destination}`,
         4_000
       )
-      return { token: normalizedToken, endpoint }
+      return status
     } catch (error) {
       await vscode.window.showErrorMessage(friendlyError(error))
       return undefined
@@ -221,27 +199,37 @@ export class AccessManager implements vscode.Disposable {
   }
 
   private async testConnection(): Promise<void> {
-    const token = await this.getToken()
-    if (!token) {
-      await this.promptAndStoreToken()
+    const executable = await this.resolveTrustedCli()
+    if (!executable) {
       return
     }
-    const endpoint = this.getEndpoint()
     try {
-      const result = await vscode.window.withProgress(
+      const status = await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Window,
-          title: "Runtz: testing connection…",
+          title: "Runtz: testing CLI login…",
         },
-        () => verifyToken(endpoint, token)
+        () => readCliAuthStatus(executable)
       )
-      await this.context.globalState.update(
-        ACCESS_WORKSPACE_STATE_KEY,
-        result.workspace.name
-      )
-      await this.context.secrets.store(TOKEN_ENDPOINT_SECRET_KEY, endpoint)
+      await this.updateIdentity(status)
+      if (!status.authenticated) {
+        const selected = await vscode.window.showInformationMessage(
+          "The Runtz CLI is not logged in.",
+          "Log in"
+        )
+        if (selected === "Log in") {
+          await this.promptAndLogin(executable)
+        }
+        return
+      }
+      if (status.workspace?.name) {
+        await vscode.window.showInformationMessage(
+          `Connected to workspace “${status.workspace.name}” through the Runtz CLI.`
+        )
+        return
+      }
       await vscode.window.showInformationMessage(
-        `Connected to workspace “${result.workspace.name}”.`
+        `A CLI login is configured for ${status.endpoint}, but this engine does not support token verification.`
       )
     } catch (error) {
       await vscode.window.showErrorMessage(friendlyError(error))
@@ -298,15 +286,32 @@ export class AccessManager implements vscode.Disposable {
       platformUrl = normalizeBaseUrl(platformInput, "Platform URL")
     }
 
-    const token = await this.getToken()
-    if (token) {
+    if (vscode.workspace.isTrusted) {
+      let executable: string | undefined
       try {
-        await verifyToken(endpoint, token)
-      } catch (error) {
-        await vscode.window.showErrorMessage(
-          `The environment was not changed. ${friendlyError(error)}`
-        )
-        return
+        executable = (
+          await locateCli(this.getCliPath(), workspaceFileRoots())
+        ).executable
+      } catch {
+        // The URL preference is still useful before the CLI is installed.
+      }
+      if (executable) {
+        let status: CliAuthStatus | undefined
+        try {
+          status = await readCliAuthStatus(executable)
+        } catch {
+          // Let a fresh login repair an invalid or unreachable previous one.
+          const nextStatus = await this.promptAndLogin(executable, endpoint)
+          if (!nextStatus) {
+            return
+          }
+        }
+        if (status?.authenticated && status.endpoint !== endpoint) {
+          const nextStatus = await this.promptAndLogin(executable, endpoint)
+          if (!nextStatus) {
+            return
+          }
+        }
       }
     }
 
@@ -316,16 +321,16 @@ export class AccessManager implements vscode.Disposable {
       endpoint,
       vscode.ConfigurationTarget.Global
     )
-    if (token) {
-      await this.context.secrets.store(TOKEN_ENDPOINT_SECRET_KEY, endpoint)
-    }
     await configuration.update(
       "platformUrl",
       platformUrl,
       vscode.ConfigurationTarget.Global
     )
     this.changeEmitter.fire()
-    void vscode.window.setStatusBarMessage("$(pass) Runtz environment updated", 3_000)
+    void vscode.window.setStatusBarMessage(
+      "$(pass) Runtz environment updated",
+      3_000
+    )
   }
 
   async configureCliPath(): Promise<void> {
@@ -377,110 +382,66 @@ export class AccessManager implements vscode.Disposable {
     }
   }
 
-  private async removeToken(): Promise<void> {
-    const selected = await vscode.window.showWarningMessage(
-      "Remove the Runtz token from this VS Code installation?",
-      { modal: true },
-      "Remove access"
-    )
-    if (selected !== "Remove access") {
+  private async logout(): Promise<void> {
+    const executable = await this.resolveTrustedCli()
+    if (!executable) {
       return
     }
-    await this.context.secrets.delete(TOKEN_SECRET_KEY)
-    await this.context.secrets.delete(TOKEN_ENDPOINT_SECRET_KEY)
-    await this.context.globalState.update(ACCESS_WORKSPACE_STATE_KEY, undefined)
-    void vscode.window.setStatusBarMessage("Runtz: access removed", 3_000)
-  }
-}
-
-async function verifyToken(endpoint: string, token: string): Promise<VerifyResponse> {
-  let response: Response
-  try {
-    response = await fetch(`${endpoint}/api/v1/keys/verify`, {
-      method: "GET",
-      redirect: "error",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-      },
-      signal: AbortSignal.timeout(15_000),
-    })
-  } catch (error) {
-    if (error instanceof Error && error.name === "TimeoutError") {
-      throw new Error("The Runtz engine did not respond in time.")
+    const selected = await vscode.window.showWarningMessage(
+      "Log out of Runtz in this environment? This also removes the stored login used by the terminal.",
+      { modal: true },
+      "Log out"
+    )
+    if (selected !== "Log out") {
+      return
     }
-    throw new Error("Could not reach the Runtz engine.")
-  }
 
-  const body = await readJson(response)
-  if (!response.ok) {
-    const message = readErrorMessage(body)
-    if (response.status === 401 || response.status === 403) {
-      throw new Error(message || "Runtz rejected the token.")
+    try {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Window,
+          title: "Runtz: logging out through the CLI…",
+        },
+        () => runCliLogout(executable)
+      )
+      const status = await readCliAuthStatus(executable)
+      await this.updateIdentity(status)
+      if (status.authenticated) {
+        await vscode.window.showWarningMessage(
+          `The stored login was removed, but ${status.tokenSource ?? "an environment token"} still authenticates the Runtz CLI.`
+        )
+      } else {
+        void vscode.window.setStatusBarMessage("Runtz: logged out", 3_000)
+      }
+    } catch (error) {
+      await vscode.window.showErrorMessage(friendlyError(error))
     }
-    if (response.status === 404 || response.status === 405) {
-      throw new Error("This engine does not support token verification. Update Runtz and try again.")
+  }
+
+  private async resolveTrustedCli(): Promise<string | undefined> {
+    if (!vscode.workspace.isTrusted) {
+      await vscode.window.showWarningMessage(
+        "Trust this workspace before running the Runtz CLI."
+      )
+      return undefined
     }
-    throw new Error(message || `Runtz responded with status ${response.status}.`)
-  }
-
-  if (!isVerifyResponse(body)) {
-    throw new Error("The engine returned an invalid authentication response.")
-  }
-  return body
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  try {
-    const text = await readLimitedBody(response, 64 * 1024)
-    return text ? JSON.parse(text) : undefined
-  } catch {
-    return undefined
-  }
-}
-
-async function readLimitedBody(response: Response, limit: number): Promise<string> {
-  if (!response.body) {
-    return ""
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let total = 0
-  let body = ""
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) {
-      return body + decoder.decode()
+    try {
+      return (
+        await locateCli(this.getCliPath(), workspaceFileRoots())
+      ).executable
+    } catch (error) {
+      await vscode.window.showErrorMessage(friendlyError(error))
+      return undefined
     }
-    total += value.byteLength
-    if (total > limit) {
-      await reader.cancel()
-      throw new Error("The engine response is too large.")
-    }
-    body += decoder.decode(value, { stream: true })
   }
-}
 
-function readErrorMessage(value: unknown): string | undefined {
-  if (!value || typeof value !== "object" || !("error" in value)) {
-    return undefined
+  private async updateIdentity(status: CliAuthStatus): Promise<void> {
+    await this.context.globalState.update(
+      ACCESS_WORKSPACE_STATE_KEY,
+      status.workspace?.name
+    )
+    this.changeEmitter.fire()
   }
-  return typeof value.error === "string" ? value.error : undefined
-}
-
-function isVerifyResponse(value: unknown): value is VerifyResponse {
-  if (!value || typeof value !== "object" || !("workspace" in value)) {
-    return false
-  }
-  const workspace = value.workspace
-  return Boolean(
-    workspace &&
-      typeof workspace === "object" &&
-      "name" in workspace &&
-      typeof workspace.name === "string" &&
-      workspace.name.trim()
-  )
 }
 
 function validateUrlInput(label: string): (value: string) => string | undefined {
@@ -507,4 +468,13 @@ function workspaceFileRoots(): string[] {
 function readStringSetting(key: string, fallback: string): string {
   const value = vscode.workspace.getConfiguration("runtz").get<unknown>(key)
   return typeof value === "string" ? value : fallback
+}
+
+function preferredLoginEndpoint(
+  status: CliAuthStatus,
+  configuredEndpoint: string
+): string {
+  return status.authenticated || status.endpoint !== DEFAULT_ENDPOINT
+    ? status.endpoint
+    : configuredEndpoint
 }

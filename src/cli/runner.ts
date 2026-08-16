@@ -17,6 +17,7 @@ const ANSI_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
 type ProcessOptions = {
   cwd?: string
   env?: NodeJS.ProcessEnv
+  input?: string
   output?: vscode.OutputChannel
   cancellation?: vscode.CancellationToken
   timeoutMs?: number
@@ -35,8 +36,6 @@ export type RunCliScanOptions = {
   targetPath: string
   source: string
   cwd: string
-  endpoint: string
-  token: string
   output: vscode.OutputChannel
   cancellation: vscode.CancellationToken
 }
@@ -44,6 +43,22 @@ export type RunCliScanOptions = {
 export type CliInstallation = {
   executable: string
   version: string
+}
+
+export type CliAuthStatus = {
+  authenticated: boolean
+  verified: boolean
+  workspace?: {
+    id?: string
+    name: string
+  }
+  apiKey?: {
+    name?: string
+    prefix?: string
+    expiresAt?: string
+  }
+  endpoint: string
+  tokenSource?: string
 }
 
 export class CliNotFoundError extends Error {
@@ -99,6 +114,60 @@ export async function locateCli(
   return { executable, version }
 }
 
+export async function readCliAuthStatus(
+  executable: string
+): Promise<CliAuthStatus> {
+  const result = await runProcess(executable, ["whoami", "--json"], {
+    timeoutMs: 35_000,
+    env: safeChildEnvironment(true),
+  })
+  if (result.code !== 0) {
+    throw new CliRunError(
+      authCommandError(result.stderr, result.stdout),
+      result.code
+    )
+  }
+  return parseCliAuthStatus(result.stdout)
+}
+
+export async function runCliLogin(
+  executable: string,
+  endpoint: string,
+  token: string
+): Promise<CliAuthStatus> {
+  const result = await runProcess(
+    executable,
+    ["login", "--endpoint", endpoint],
+    {
+      timeoutMs: 35_000,
+      env: safeChildEnvironment(true),
+      input: `${token}\n`,
+      redactions: [token],
+    }
+  )
+  if (result.code !== 0) {
+    const message = sanitizeOutput(
+      lastUsefulLine(result.stderr) || lastUsefulLine(result.stdout) || "",
+      [token]
+    )
+    throw new CliRunError(message || "Could not log in to Runtz.", result.code)
+  }
+  return readCliAuthStatus(executable)
+}
+
+export async function runCliLogout(executable: string): Promise<void> {
+  const result = await runProcess(executable, ["logout"], {
+    timeoutMs: 10_000,
+    env: safeChildEnvironment(true),
+  })
+  if (result.code !== 0) {
+    throw new CliRunError(
+      lastUsefulLine(result.stderr) || "Could not log out of Runtz.",
+      result.code
+    )
+  }
+}
+
 export async function runCliScan(
   options: RunCliScanOptions
 ): Promise<ParsedCliScan> {
@@ -126,12 +195,9 @@ export async function runCliScan(
     cwd: options.cwd,
     cancellation: options.cancellation,
     output: options.output,
-    redactions: [options.token],
     env: {
-      ...safeChildEnvironment(),
+      ...safeChildEnvironment(true),
       NO_COLOR: "1",
-      RUNTZ_TOKEN: options.token,
-      RUNTZ_ENDPOINT: options.endpoint,
       RUNTZ_CRITICAL_THRESHOLD: "0",
       RUNTZ_HIGH_THRESHOLD: "0",
       RUNTZ_MEDIUM_THRESHOLD: "0",
@@ -143,15 +209,14 @@ export async function runCliScan(
   // extension sets unreachable thresholds, but accepting a valid result keeps
   // compatibility with future CLI versions and platform limits.
   if (result.code !== 0 && result.code !== 3) {
-    const safeStderr = sanitizeOutput(result.stderr, [options.token])
     throw new CliRunError(
-      lastUsefulLine(safeStderr) ||
+      lastUsefulLine(result.stderr) ||
         `The Runtz CLI exited with code ${result.code}.`,
       result.code
     )
   }
 
-  return parseCliScanOutput(sanitizeOutput(result.stdout, [options.token]))
+  return parseCliScanOutput(sanitizeOutput(result.stdout, undefined))
 }
 
 function runProcess(
@@ -168,7 +233,7 @@ function runProcess(
         shell: false,
         detached: false,
         windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       })
     } catch (error) {
       reject(mapSpawnError(error, executable))
@@ -182,6 +247,13 @@ function runProcess(
     let settled = false
     let forceKillTimer: NodeJS.Timeout | undefined
     let timeoutTimer: NodeJS.Timeout | undefined
+
+    if (options.input !== undefined) {
+      // The login token is written to the child's stdin, never argv or logs.
+      // Ignore a broken pipe here and report the CLI's own exit and stderr.
+      child.stdin?.on("error", () => undefined)
+      child.stdin?.end(options.input)
+    }
 
     const cancellationDisposable = options.cancellation?.onCancellationRequested(
       () => {
@@ -340,7 +412,7 @@ function isInside(candidate: string, root: string): boolean {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
 }
 
-function safeChildEnvironment(): NodeJS.ProcessEnv {
+function safeChildEnvironment(includeAuthentication = false): NodeJS.ProcessEnv {
   const allowed = [
     "PATH",
     "Path",
@@ -349,6 +421,11 @@ function safeChildEnvironment(): NodeJS.ProcessEnv {
     "TMPDIR",
     "TMP",
     "TEMP",
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "APPDATA",
+    "AppData",
+    "USERPROFILE",
     "SYSTEMROOT",
     "SystemRoot",
     "WINDIR",
@@ -361,6 +438,14 @@ function safeChildEnvironment(): NodeJS.ProcessEnv {
     "SSL_CERT_FILE",
     "SSL_CERT_DIR",
   ]
+  if (includeAuthentication) {
+    allowed.push(
+      "RUNTZ_TOKEN",
+      "RUNTZ_API_KEY",
+      "RUNTZ_ENDPOINT",
+      "RUNTZ_CONFIG_DIR"
+    )
+  }
   const environment: NodeJS.ProcessEnv = {}
   for (const key of allowed) {
     const value = process.env[key]
@@ -369,6 +454,90 @@ function safeChildEnvironment(): NodeJS.ProcessEnv {
     }
   }
   return environment
+}
+
+function parseCliAuthStatus(value: string): CliAuthStatus {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stripAnsi(value).trim())
+  } catch {
+    throw new CliRunError(
+      "Update the Runtz CLI: this extension requires `runtz whoami --json`."
+    )
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new CliRunError("The Runtz CLI returned an invalid login status.")
+  }
+  const candidate = parsed as Record<string, unknown>
+  if (
+    typeof candidate.authenticated !== "boolean" ||
+    typeof candidate.verified !== "boolean" ||
+    typeof candidate.endpoint !== "string" ||
+    !candidate.endpoint.trim()
+  ) {
+    throw new CliRunError("The Runtz CLI returned an invalid login status.")
+  }
+
+  const status: CliAuthStatus = {
+    authenticated: candidate.authenticated,
+    verified: candidate.verified,
+    endpoint: candidate.endpoint,
+  }
+  if (typeof candidate.tokenSource === "string" && candidate.tokenSource) {
+    status.tokenSource = candidate.tokenSource
+  }
+  if (candidate.workspace !== undefined) {
+    if (!isStringRecord(candidate.workspace, "name")) {
+      throw new CliRunError("The Runtz CLI returned an invalid workspace.")
+    }
+    const workspace = candidate.workspace as Record<string, unknown> & {
+      name: string
+    }
+    status.workspace = {
+      name: workspace.name,
+      ...(typeof workspace.id === "string"
+        ? { id: workspace.id }
+        : {}),
+    }
+  }
+  if (candidate.apiKey !== undefined) {
+    if (!candidate.apiKey || typeof candidate.apiKey !== "object") {
+      throw new CliRunError("The Runtz CLI returned invalid API key metadata.")
+    }
+    const apiKey = candidate.apiKey as Record<string, unknown>
+    status.apiKey = {
+      ...(typeof apiKey.name === "string" ? { name: apiKey.name } : {}),
+      ...(typeof apiKey.prefix === "string" ? { prefix: apiKey.prefix } : {}),
+      ...(typeof apiKey.expiresAt === "string"
+        ? { expiresAt: apiKey.expiresAt }
+        : {}),
+    }
+  }
+  if (status.verified && !status.workspace) {
+    throw new CliRunError("The Runtz CLI returned an invalid verified login.")
+  }
+  return status
+}
+
+function authCommandError(stderr: string, stdout: string): string {
+  const detail = lastUsefulLine(stderr) || lastUsefulLine(stdout)
+  if (/flag provided but not defined.*json|unknown flag.*json/i.test(detail ?? "")) {
+    return "Update the Runtz CLI: this extension requires `runtz whoami --json`."
+  }
+  return detail || "Could not read the Runtz CLI login."
+}
+
+function isStringRecord(
+  value: unknown,
+  key: string
+): value is Record<string, unknown> & Record<typeof key, string> {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      key in value &&
+      typeof (value as Record<string, unknown>)[key] === "string" &&
+      ((value as Record<string, unknown>)[key] as string).trim()
+  )
 }
 
 function terminateChild(
