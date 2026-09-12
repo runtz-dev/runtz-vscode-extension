@@ -33,11 +33,11 @@ function isLoopbackHost(hostname: string): boolean {
 }
 
 export function buildOverviewUrl(platformUrl: string): string {
-  return appendPath(platformUrl, "app", "overview")
+  return appendPath(platformUrl, "overview")
 }
 
 export function buildScanTypeUrl(platformUrl: string, type: ScanType): string {
-  return appendPath(platformUrl, "app", type)
+  return appendPath(platformUrl, type)
 }
 
 export function buildScanDetailsUrl(
@@ -45,7 +45,7 @@ export function buildScanDetailsUrl(
   result: Pick<ScanResult, "type" | "projectName" | "scanId">
 ): string {
   const url = new URL(
-    appendPath(platformUrl, "app", result.type, result.projectName)
+    appendPath(platformUrl, result.type, result.projectName)
   )
   const scanId = result.scanId?.trim()
   if (scanId) {
@@ -55,7 +55,7 @@ export function buildScanDetailsUrl(
 }
 
 export function buildApiKeysUrl(platformUrl: string): string {
-  return appendPath(platformUrl, "app", "api-keys")
+  return appendPath(platformUrl, "api-keys")
 }
 
 function appendPath(base: string, ...segments: string[]): string {
