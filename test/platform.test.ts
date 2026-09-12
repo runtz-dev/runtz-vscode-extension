@@ -11,13 +11,13 @@ import {
 describe("platform URLs", () => {
   it("builds cloud routes", () => {
     expect(buildOverviewUrl("https://runtz.dev")).toBe(
-      "https://runtz.dev/app/overview"
+      "https://runtz.dev/overview"
     )
     expect(buildScanTypeUrl("https://runtz.dev", "sca")).toBe(
-      "https://runtz.dev/app/sca"
+      "https://runtz.dev/sca"
     )
     expect(buildApiKeysUrl("https://runtz.dev/")).toBe(
-      "https://runtz.dev/app/api-keys"
+      "https://runtz.dev/api-keys"
     )
   })
 
@@ -29,7 +29,7 @@ describe("platform URLs", () => {
         scanId: "scan/id ?42",
       })
     ).toBe(
-      "https://security.example.com/runtz/app/sast/checkout%20api%2Fworker?scanId=scan%2Fid+%3F42"
+      "https://security.example.com/runtz/sast/checkout%20api%2Fworker?scanId=scan%2Fid+%3F42"
     )
   })
 
@@ -39,7 +39,7 @@ describe("platform URLs", () => {
         type: "sca",
         projectName: "frontend",
       })
-    ).toBe("https://runtz.dev/app/sca/frontend")
+    ).toBe("https://runtz.dev/sca/frontend")
   })
 
   it("rejects unsafe URL shapes", () => {

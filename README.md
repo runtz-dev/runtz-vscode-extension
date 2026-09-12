@@ -11,7 +11,7 @@ the resulting security report to your configured Runtz platform.
 ## Requirements
 
 - VS Code 1.95 or newer.
-- The [Runtz CLI](https://runtz.dev/home/docs) installed and available as
+- The [Runtz CLI](https://runtz.dev/docs) installed and available as
   `runtz` in `PATH`.
 - A workspace API key created in **Runtz → API Keys**.
 

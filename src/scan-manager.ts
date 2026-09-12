@@ -234,7 +234,7 @@ export class ScanManager implements vscode.Disposable {
     )
     if (selected === "Install CLI") {
       await vscode.env.openExternal(
-        vscode.Uri.parse("https://runtz.dev/home/docs")
+        vscode.Uri.parse("https://runtz.dev/docs")
       )
     } else if (selected === "Configure path") {
       await this.access.configureCliPath()
